@@ -1,9 +1,29 @@
-import { CATEGORY_RULES, type Category } from '../rules';
+import type { Category } from '../rules';
+import { getEffectiveRules } from './rulesOverride';
 import type { ExtractedField, ComplianceReport, OCRWord, FieldBoundingBox } from '../types/compliance';
 
 interface OCRLine {
   text: string;
   confidence: number;
+}
+
+export interface MRPEvidenceContext {
+  secondPassAttempted?: boolean;
+  secondPassText?: string;
+  isUncertain?: boolean;
+  isLowConfidence?: boolean;
+}
+
+export interface MRPVerificationState {
+  mrpValue: string | null;
+  mrpDetected: boolean;
+  taxInclusiveVerified: boolean;
+  taxInclusiveNotDetected: boolean;
+  taxInclusiveUnreadable: boolean;
+  confidence: number;
+  status: 'compliant' | 'warning' | 'violation';
+  reason?: string;
+  suggestion?: string;
 }
 
 export function extractFields(
@@ -12,13 +32,12 @@ export function extractFields(
   overallConfidence: number,
   category: Category,
   isImported: boolean,
-  words: OCRWord[] = []
+  words: OCRWord[] = [],
+  evidenceContext?: MRPEvidenceContext
 ): ComplianceReport {
-  const rulesConfig = CATEGORY_RULES[category];
-  const rules = rulesConfig.getRules(isImported);
+  const rules = getEffectiveRules(category, isImported);
 
   const cleanText = rawText.replace(/\r\n/g, '\n');
-  const normalizedText = cleanText.toLowerCase();
 
   // Helper to find OCR confidence of text near a match
   const findConfidenceNear = (searchTerm: string): number => {
@@ -31,133 +50,322 @@ export function extractFields(
     return overallConfidence > 0 ? Math.round(overallConfidence) : 75;
   };
 
-  // 1. Manufacturer Name
+  // 1. Manufacturer Name / Brand
   const extractManufacturer = (): { value: string | null; confidence: number; reason?: string } => {
-    // Check patterns near Mfg, Manufactured by, Packed by, Marketed by
-    const mfgRegex = /(?:mfg\.?\s*(?:by|at)?|manufactured\s*(?:by|at)?|mfd\.?\s*(?:by)?|packed\s*(?:by)?|marketed\s*(?:by)?|bottled\s*(?:by)?|produced\s*(?:by)?)[:\-\s]+([^\n\r,]+(?:,\s*[^\n\r]+)?)/i;
+    const prefixRegex = /(?:mfg\.?\s*(?:by|at|for)?|manufactured\s*(?:by|at|for|in)?|mfd\.?\s*(?:by|at)?|packed\s*(?:by|at)?|pkd\.?\s*(?:by)?|marketed\s*(?:by|at)?|mktd\.?\s*(?:by)?|bottled\s*(?:by)?|produced\s*(?:by)?|mfr\.?\s*(?:by)?|brand\s*[:\-]?|made\s*in\s*india\s*by)/i;
+
+    // Check line by line for prefix
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].text.trim();
+      if (prefixRegex.test(line)) {
+        // Extract after the prefix on the same line
+        const afterPrefix = line.replace(/^.*?(?:mfg\.?\s*(?:by|at|for)?|manufactured\s*(?:by|at|for|in)?|mfd\.?\s*(?:by|at)?|packed\s*(?:by|at)?|pkd\.?\s*(?:by)?|marketed\s*(?:by|at)?|mktd\.?\s*(?:by)?|bottled\s*(?:by)?|produced\s*(?:by)?|mfr\.?\s*(?:by)?|brand\s*[:\-]?|made\s*in\s*india\s*by)[\s:.\-]*/i, '').trim();
+        if (afterPrefix.length > 2) {
+          return {
+            value: afterPrefix.replace(/[;,.\-]+$/, '').trim(),
+            confidence: Math.max(65, lines[i].confidence || findConfidenceNear(afterPrefix)),
+          };
+        }
+        // If keyword is at end of line, check next line
+        if (i + 1 < lines.length && lines[i + 1].text.trim().length > 2) {
+          const nextLine = lines[i + 1].text.trim().replace(/[;,.\-]+$/, '').trim();
+          return {
+            value: nextLine,
+            confidence: Math.max(65, lines[i + 1].confidence || findConfidenceNear(nextLine)),
+          };
+        }
+      }
+    }
+
+    // Single-string regex fallback
+    const mfgRegex = /(?:mfg\.?\s*(?:by|at|for)?|manufactured\s*(?:by|at|for|in)?|mfd\.?\s*(?:by|at)?|packed\s*(?:by|at)?|pkd\.?\s*(?:by)?|marketed\s*(?:by|at)?|mktd\.?\s*(?:by)?|bottled\s*(?:by)?|produced\s*(?:by)?|brand\s*[:\-]?|made\s*in\s*india\s*by)[\s:.\-]+([^\n\r,]+(?:,\s*[^\n\r]+)?)/i;
     const match = cleanText.match(mfgRegex);
     if (match && match[1]) {
-      const val = match[1].trim().replace(/^[:\-\s]+/, '');
+      const val = match[1].trim().replace(/^[:\-\s]+/, '').replace(/[;,.\-]+$/, '').trim();
       if (val.length > 2) {
         return {
           value: val,
-          confidence: findConfidenceNear(match[0]),
+          confidence: Math.max(65, findConfidenceNear(match[0])),
         };
       }
     }
 
-    // Fallback: lines containing Pvt Ltd, Ltd, Foods, Industries, Herbals, Laboratories
-    const corpRegex = /([A-Z0-9][A-Za-z0-9\s&]+(?:Pvt\.?\s*Ltd\.?|Private\s*Limited|Limited|Ltd\.?|Industries|Enterprises|Herbals|Foods|Pharma|Laboratories))/;
+    // Corporate entity names (e.g. Britannia Industries Ltd, Parle Products Pvt Ltd)
+    const corpLineRegex = /(?:Pvt\.?\s*Ltd\.?|Private\s*Limited|Limited|Ltd\.?|Industries|Enterprises|Herbals|Foods|Pharma|Laboratories|Beverages|Products|Confectionery|Bakery)/i;
+    for (const lineObj of lines) {
+      const l = lineObj.text.trim();
+      if (corpLineRegex.test(l) && l.length > 3 && l.length < 80) {
+        return {
+          value: l.replace(/[;,.\-]+$/, '').trim(),
+          confidence: Math.max(65, lineObj.confidence || 75),
+        };
+      }
+    }
+
+    // Fallback: Check clean text for corporate entity pattern
+    const corpRegex = /([A-Za-z0-9][A-Za-z0-9\s&.',-]+?(?:Pvt\.?\s*Ltd\.?|Private\s*Limited|Limited|Ltd\.?|Industries|Enterprises|Herbals|Foods|Pharma|Laboratories|Beverages|Products))/i;
     const corpMatch = cleanText.match(corpRegex);
-    if (corpMatch && corpMatch[1]) {
+    if (corpMatch && corpMatch[1] && corpMatch[1].trim().length > 3) {
       return {
-        value: corpMatch[1].trim(),
-        confidence: findConfidenceNear(corpMatch[1]),
+        value: corpMatch[1].trim().replace(/[;,.\-]+$/, ''),
+        confidence: Math.max(65, findConfidenceNear(corpMatch[1])),
       };
+    }
+
+    // Fallback: prominent title/brand from first 2 non-empty lines if they appear to be brand names
+    for (let i = 0; i < Math.min(3, lines.length); i++) {
+      const candidate = lines[i].text.trim();
+      if (candidate.length >= 3 && candidate.length <= 40 && !/^(?:mrp|batch|net|pkd|mfg|exp|date|best|lic|fssai)/i.test(candidate)) {
+        if (/^[A-Z0-9\s&'-]+$/.test(candidate) || candidate.includes('TM') || candidate.includes('®')) {
+          return {
+            value: candidate.replace(/[;,.\-]+$/, '').trim(),
+            confidence: Math.max(60, lines[i].confidence || 70),
+          };
+        }
+      }
     }
 
     return {
       value: null,
       confidence: 0,
-      reason: 'Manufacturer or brand name prefix (Mfg / Manufactured by) not detected on label',
+      reason: 'Manufacturer or brand name prefix (Mfg / Manufactured by / Marketed by) not detected on label',
     };
   };
 
   // 2. MRP (Feature 1: checks tax phrase "inclusive of all taxes" under Rule 6(1)(f))
-  const extractMRP = (): {
-    value: string | null;
-    confidence: number;
-    hasTaxPhrase: boolean;
-    reason?: string;
-  } => {
-    const taxPhraseRegex = /(?:incl(?:usive)?\.?\s*of\s*all\s*taxes|incl\.?\s*all\s*taxes|inclusive\s*all\s*taxes)/i;
+  // Helper to normalize OCR text for semantic tax declaration matching
+  const normalizeForTaxPhrase = (text: string): string => {
+    if (!text) return '';
+    return text
+      .toLowerCase()
+      // Fix common OCR character misreads on "inclusive" (e.g. 1nclusive, lnclusive, |nclusive)
+      .replace(/\b[1l|]ncl/g, 'incl')
+      // Strip brackets, parentheses, quotes, punctuation into spaces
+      .replace(/[()[\]{}'"“”‘’.,;:_\-/\\|]/g, ' ')
+      // Collapse whitespace to single space
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
 
-    // Matches MRP / ₹ / Rs followed by number, optionally noting tax inclusion
-    const mrpRegex = /(?:m\.?r\.?p\.?|max(?:imum)?\s*retail\s*price|mrp\s*\(?incl\.?\)?)[\s:.\-₹Rs]*(?:₹|rs\.?|inr)?\s*([0-9,]+(?:\.[0-9]{1,2})?)/i;
-    const match = cleanText.match(mrpRegex);
+  // 2. MRP: Independent state evaluation separating extraction from verification
+  const verifyMRP = (): MRPVerificationState => {
+    // 1. MRP extraction (unchanged, preserves existing correct behavior)
+    let rawPrice: string | null = null;
+    let mrpConfidence = 0;
 
-    if (match && match[1]) {
-      const price = match[1].replace(/,$/, '');
-      const matchIndex = match.index ?? 0;
-      const snippetStart = Math.max(0, matchIndex - 60);
-      const snippetEnd = Math.min(cleanText.length, matchIndex + match[0].length + 80);
-      const nearbyText = cleanText.slice(snippetStart, snippetEnd);
-      const hasTaxes = taxPhraseRegex.test(nearbyText) || taxPhraseRegex.test(cleanText);
+    const normalizePrice = (rawVal: string): string => {
+      const clean = rawVal.replace(/[₹RsInrINR,\s]/gi, '').replace(/[.\-/]+$/, '').trim();
+      const num = parseFloat(clean);
+      if (isNaN(num)) return clean;
+      return num.toFixed(2);
+    };
 
+    // Line-by-line inspection for MRP / Maximum Retail Price
+    const mrpPrefixRegex = /(?:m\s*\.?\s*r\s*\.?\s*p\.?|max(?:imum)?\s*retail\s*price)/i;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].text.trim();
+      if (mrpPrefixRegex.test(line)) {
+        const sameLinePrice = line.match(
+          /(?:m\s*\.?\s*r\s*\.?\s*p\.?|max(?:imum)?\s*retail\s*price)[^\d₹\n\r]{0,35}?(?:₹|rs\.?|inr)?\s*([0-9,]+(?:\.[0-9]{1,2})?)/i
+        );
+        if (sameLinePrice && sameLinePrice[1]) {
+          rawPrice = sameLinePrice[1];
+          mrpConfidence = Math.max(70, lines[i].confidence || findConfidenceNear(sameLinePrice[0]));
+          break;
+        }
+
+        if (i + 1 < lines.length) {
+          const nextLine = lines[i + 1].text.trim();
+          const nextLinePrice = nextLine.match(
+            /^(?:[\s:.\-₹RsInrINR]*|mrp[\s:.]*)?(?:₹|rs\.?|inr)?\s*([0-9,]+(?:\.[0-9]{1,2})?)/i
+          );
+          if (nextLinePrice && nextLinePrice[1]) {
+            rawPrice = nextLinePrice[1];
+            mrpConfidence = Math.max(70, lines[i + 1].confidence || findConfidenceNear(nextLinePrice[0]));
+            break;
+          }
+        }
+      }
+    }
+
+    if (!rawPrice) {
+      const mrpRegex =
+        /(?:m\s*\.?\s*r\s*\.?\s*p\.?|max(?:imum)?\s*retail\s*price|mrp\s*\(?incl\.?\)?)[\s:.\-₹RsInrINR]*(?:₹|rs\.?|inr)?\s*([0-9,]+(?:\.[0-9]{1,2})?)/i;
+      const match = cleanText.match(mrpRegex);
+      if (match && match[1]) {
+        rawPrice = match[1].replace(/,$/, '');
+        mrpConfidence = Math.max(65, findConfidenceNear(match[0]));
+      }
+    }
+
+    if (!rawPrice) {
+      const rupeeMatch = cleanText.match(/₹\s*([0-9,]+(?:\.[0-9]{1,2})?)/);
+      if (rupeeMatch && rupeeMatch[1]) {
+        rawPrice = rupeeMatch[1].replace(/,$/, '');
+        mrpConfidence = Math.max(65, findConfidenceNear(rupeeMatch[0]));
+      }
+    }
+
+    if (!rawPrice) {
+      const rsMatch = cleanText.match(/\b(?:Rs\.?|INR)\s*([0-9,]+(?:\.[0-9]{1,2})?)/i);
+      if (rsMatch && rsMatch[1]) {
+        rawPrice = rsMatch[1].replace(/,$/, '');
+        mrpConfidence = Math.max(65, findConfidenceNear(rsMatch[0]));
+      }
+    }
+
+    const mrpDetected = rawPrice !== null;
+    const mrpValue = mrpDetected ? `Maximum Retail Price: ₹${normalizePrice(rawPrice!)}` : null;
+
+    if (!mrpDetected) {
       return {
-        value: `₹ ${price}${hasTaxes ? ' (incl. of all taxes)' : ''}`,
-        confidence: findConfidenceNear(match[0]),
-        hasTaxPhrase: hasTaxes,
+        mrpValue: null,
+        mrpDetected: false,
+        taxInclusiveVerified: false,
+        taxInclusiveNotDetected: true,
+        taxInclusiveUnreadable: false,
+        confidence: 0,
+        status: 'violation',
+        reason: 'MRP declaration (with ₹, Rs, or MRP prefix) missing or illegible',
+        suggestion: 'Declare Maximum Retail Price (MRP) in Rupees on the packaging.',
       };
     }
 
-    // Direct ₹ symbol followed by numbers
-    const rupeeRegex = /₹\s*([0-9,]+(?:\.[0-9]{1,2})?)/;
-    const rupeeMatch = cleanText.match(rupeeRegex);
-    if (rupeeMatch && rupeeMatch[1]) {
-      const price = rupeeMatch[1].replace(/,$/, '');
-      const matchIndex = rupeeMatch.index ?? 0;
-      const snippet = cleanText.slice(Math.max(0, matchIndex - 60), Math.min(cleanText.length, matchIndex + 100));
-      const hasTaxes = taxPhraseRegex.test(snippet) || taxPhraseRegex.test(cleanText);
+    // 2. Tax declaration text search across complete OCR block (primary + fallback pass)
+    const combinedOcrText = `${rawText}\n${cleanText}\n${lines.map((l) => l.text).join(' ')}${
+      evidenceContext?.secondPassText ? `\n${evidenceContext.secondPassText}` : ''
+    }`;
+    const norm = normalizeForTaxPhrase(combinedOcrText);
 
+    const hasInclRoot = /\bincl\w*\b/.test(norm) || /\binclude[ds]?\b/.test(norm);
+    const hasTaxWord = /\btax(?:es)?\b/.test(norm);
+    const hasNegation =
+      /\b(?:not|without|extra)\s+(?:incl\w*|include[ds]?)\b/.test(norm) ||
+      /\btax(?:es)?\s+not\s+include[ds]?\b/.test(norm) ||
+      /\bexcl\w*\b/.test(norm);
+
+    const taxInclusiveVerified = hasInclRoot && hasTaxWord && !hasNegation;
+
+    console.debug('[MRP Verification Decision]', {
+      mrpValue,
+      normalizedText: norm,
+      hasInclRoot,
+      hasTaxWord,
+      hasNegation,
+      taxInclusiveVerified,
+    });
+
+    // 3. Three-way evidence-based decision
+    if (taxInclusiveVerified) {
       return {
-        value: `₹ ${price}${hasTaxes ? ' (incl. of all taxes)' : ''}`,
-        confidence: findConfidenceNear(rupeeMatch[0]),
-        hasTaxPhrase: hasTaxes,
+        mrpValue,
+        mrpDetected: true,
+        taxInclusiveVerified: true,
+        taxInclusiveNotDetected: false,
+        taxInclusiveUnreadable: false,
+        confidence: mrpConfidence,
+        status: 'compliant',
       };
     }
 
-    // Rs. pattern
-    const rsRegex = /\bRs\.?\s*([0-9,]+(?:\.[0-9]{1,2})?)/i;
-    const rsMatch = cleanText.match(rsRegex);
-    if (rsMatch && rsMatch[1]) {
-      const price = rsMatch[1].replace(/,$/, '');
-      const matchIndex = rsMatch.index ?? 0;
-      const snippet = cleanText.slice(Math.max(0, matchIndex - 60), Math.min(cleanText.length, matchIndex + 100));
-      const hasTaxes = taxPhraseRegex.test(snippet) || taxPhraseRegex.test(cleanText);
+    // Evaluate whether UNCERTAIN (Unable to Verify) or CLEARLY ABSENT (Tax Declaration Missing)
+    const isExplicitlyNegated = hasNegation;
+    const isLowConfidence =
+      overallConfidence < 80 ||
+      mrpConfidence < 75 ||
+      evidenceContext?.isLowConfidence === true ||
+      evidenceContext?.isUncertain === true;
+    const isSparseText = lines.length < 4 || rawText.trim().length < 100;
+    const hasPartialTokens = (hasTaxWord || hasInclRoot) && !isExplicitlyNegated;
+    const secondPassFailedWithoutEvidence = evidenceContext?.secondPassAttempted === true;
 
+    const taxInclusiveUnreadable =
+      !isExplicitlyNegated &&
+      (isLowConfidence || isSparseText || hasPartialTokens || secondPassFailedWithoutEvidence);
+
+    if (taxInclusiveUnreadable) {
       return {
-        value: `₹ ${price}${hasTaxes ? ' (incl. of all taxes)' : ''}`,
-        confidence: findConfidenceNear(rsMatch[0]),
-        hasTaxPhrase: hasTaxes,
+        mrpValue,
+        mrpDetected: true,
+        taxInclusiveVerified: false,
+        taxInclusiveNotDetected: false,
+        taxInclusiveUnreadable: true,
+        confidence: mrpConfidence,
+        status: 'warning',
+        reason: 'MRP was detected, but the tax-inclusive declaration could not be reliably verified from the available image/OCR evidence.',
+        suggestion: 'Ensure packaging image has high resolution and even lighting around the MRP area to verify tax declarations.',
       };
     }
 
+    // CLEARLY ABSENT: Evidence demonstrates full label was cleanly read with high confidence and no declaration present
     return {
-      value: null,
-      confidence: 0,
-      hasTaxPhrase: false,
-      reason: 'MRP declaration (with ₹, Rs, or MRP prefix) missing or illegible',
+      mrpValue,
+      mrpDetected: true,
+      taxInclusiveVerified: false,
+      taxInclusiveNotDetected: true,
+      taxInclusiveUnreadable: false,
+      confidence: mrpConfidence,
+      status: 'violation',
+      reason: "MRP detected, but 'inclusive of all taxes' declaration is missing on product label — required under Rule 6(1)(f)",
+      suggestion: "Add the phrase 'inclusive of all taxes' or 'incl. of all taxes' next to the MRP.",
     };
   };
 
-  // 3. Net Quantity
+  // 3. Net Quantity / Net Weight
   const extractNetQuantity = (): { value: string | null; confidence: number; reason?: string } => {
-    const netQtyPrefixRegex = /(?:net\s*(?:qty|quantity|wt|weight|vol|volume|content)[\s:.\-]*)(\d+(?:\.\d+)?\s*(?:kg|kgs|g|gm|gms|gram|grams|ml|l|ltr|liter|litres|n|units?|pieces?)\b)/i;
-    const prefixMatch = cleanText.match(netQtyPrefixRegex);
+    // 1. Prefix with optional qualifier like (when packed) or : followed by number and unit
+    const prefixRegex = /(?:net\s*(?:qty|quantity|wt|weight|vol|volume|content|contents)|(?:^|\b)(?:weight|quantity)[\s:.\-])[^\d\n\r]{0,30}?(\d+(?:\.\d+)?\s*(?:kg|kgs|g|gm|gms|gram|grams|ml|l|ltr|liter|litres|n|units?|pieces?)\b)/i;
+    const prefixMatch = cleanText.match(prefixRegex);
     if (prefixMatch && prefixMatch[1]) {
       return {
         value: prefixMatch[1].trim(),
-        confidence: findConfidenceNear(prefixMatch[0]),
+        confidence: Math.max(70, findConfidenceNear(prefixMatch[0])),
       };
     }
 
+    // Check line by line for NET WT / NET WEIGHT / QTY labels
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].text.trim();
+      if (/(?:net\s*(?:wt|weight|qty|quantity|vol|volume|content|contents)|(?:^|\b)weight\b)/i.test(line)) {
+        const metricInLine = line.match(/(\d+(?:\.\d+)?\s*(?:kg|kgs|gm|gms|gram|grams|ml|ltr|litre|litres|g|l|n|units?|pieces?)\b)/i);
+        if (metricInLine && metricInLine[1]) {
+          return {
+            value: metricInLine[1].trim(),
+            confidence: Math.max(70, lines[i].confidence || 75),
+          };
+        }
+        // Check next line
+        if (i + 1 < lines.length) {
+          const nextMetric = lines[i + 1].text.trim().match(/(\d+(?:\.\d+)?\s*(?:kg|kgs|gm|gms|gram|grams|ml|ltr|litre|litres|g|l|n|units?|pieces?)\b)/i);
+          if (nextMetric && nextMetric[1]) {
+            return {
+              value: nextMetric[1].trim(),
+              confidence: Math.max(70, lines[i + 1].confidence || 75),
+            };
+          }
+        }
+      }
+    }
+
+    // 2. Metric quantity standalone anywhere in text
     const metricRegex = /\b(\d+(?:\.\d+)?\s*(?:kg|kgs|gm|gms|gram|grams|ml|ltr|litre|litres|g(?![a-z])|l(?![a-z])))\b/i;
     const metricMatch = cleanText.match(metricRegex);
     if (metricMatch && metricMatch[1]) {
       const val = metricMatch[1].trim();
       return {
         value: val,
-        confidence: findConfidenceNear(val),
+        confidence: Math.max(65, findConfidenceNear(val)),
       };
     }
 
-    const countRegex = /\b(\d+\s*(?:N|Unit|Units|Piece|Pieces))\b/i;
+    // 3. Count unit e.g. 1 N, 2 Units, 1 Piece
+    const countRegex = /\b(\d+\s*(?:N|Unit|Units|Piece|Pieces|Set|Sets))\b/i;
     const countMatch = cleanText.match(countRegex);
     if (countMatch && countMatch[1]) {
       return {
         value: countMatch[1].trim(),
-        confidence: findConfidenceNear(countMatch[0]),
+        confidence: Math.max(65, findConfidenceNear(countMatch[0])),
       };
     }
 
@@ -170,30 +378,47 @@ export function extractFields(
 
   // 4. Mfg Date (Food & Beverages mandatory)
   const extractMfgDate = (): { value: string | null; confidence: number; reason?: string } => {
-    const mfgDateRegex = /(?:mfg\.?\s*date|mfd\.?|pkd\.?|packed\s*on|date\s*of\s*(?:mfg|packing))[\s:.\-]*([0-9]{1,2}[\/\-.][0-9]{2,4}|[A-Za-z]{3,9}\.?\s*20[0-9]{2}|20[0-9]{2}[\/\-.][0-9]{2})/i;
+    // 3-part or 2-part date or named month near Mfg / Pkd keyword
+    const mfgDateRegex = /(?:mfg\.?\s*(?:date|dt)?|mfd\.?|pkd\.?\s*(?:date|dt|on)?|packed\s*(?:on|date)?|date\s*of\s*(?:mfg|packing|pkd)|dom|dop)[\s:.\-]*([0-3]?[0-9][\/\-.][0-1]?[0-9][\/\-.](?:20)?[0-9]{2}|(?:0[1-9]|1[0-2])[\/\-.](?:20)?[0-9]{2}|[0-3]?[0-9][\/\-.][0-9]{2}|[A-Za-z]{3,9}\.?\s*(?:20)?[0-9]{2}|(?:20)?[0-9]{2}[\/\-.][0-9]{2})/i;
     const match = cleanText.match(mfgDateRegex);
     if (match && match[1]) {
       return {
         value: match[1].trim(),
-        confidence: findConfidenceNear(match[0]),
+        confidence: Math.max(65, findConfidenceNear(match[0])),
       };
     }
 
-    const bbRegex = /(?:best\s*before|use\s*by|exp\.?\s*date)[\s:.\-]*([0-9]{1,2}[\/\-.][0-9]{2,4}|[A-Za-z]{3,9}\.?\s*20[0-9]{2})/i;
+    // Check line by line for Mfg / Pkd line
+    for (const lineObj of lines) {
+      const l = lineObj.text.trim();
+      if (/(?:mfg|mfd|pkd|packed|date\s*of)/i.test(l)) {
+        const dateMatch = l.match(/([0-3]?[0-9][\/\-.][0-1]?[0-9][\/\-.](?:20)?[0-9]{2}|(?:0[1-9]|1[0-2])[\/\-.](?:20)?[0-9]{2}|[A-Za-z]{3,9}\.?\s*(?:20)?[0-9]{2})/i);
+        if (dateMatch && dateMatch[1]) {
+          return {
+            value: dateMatch[1].trim(),
+            confidence: Math.max(65, lineObj.confidence || 75),
+          };
+        }
+      }
+    }
+
+    // Best before or use by
+    const bbRegex = /(?:best\s*before|use\s*by|exp\.?\s*(?:date)?)[\s:.\-]*([0-3]?[0-9][\/\-.][0-1]?[0-9][\/\-.](?:20)?[0-9]{2}|(?:0[1-9]|1[0-2])[\/\-.](?:20)?[0-9]{2}|[A-Za-z]{3,9}\.?\s*(?:20)?[0-9]{2})/i;
     const bbMatch = cleanText.match(bbRegex);
     if (bbMatch && bbMatch[1]) {
       return {
         value: `Best Before: ${bbMatch[1].trim()}`,
-        confidence: findConfidenceNear(bbMatch[0]),
+        confidence: Math.max(65, findConfidenceNear(bbMatch[0])),
       };
     }
 
-    const monthYearRegex = /\b(0[1-9]|1[0-2])[\/\-.](20\d{2})\b/;
-    const myMatch = cleanText.match(monthYearRegex);
-    if (myMatch && myMatch[0]) {
+    // Standalone MM/YYYY or DD/MM/YYYY date
+    const dateRegex = /\b([0-3]?[0-9][\/\-.](?:0[1-9]|1[0-2])[\/\-.](?:20\d{2}|\d{2})|(?:0[1-9]|1[0-2])[\/\-.](?:20\d{2}))\b/;
+    const dMatch = cleanText.match(dateRegex);
+    if (dMatch && dMatch[0]) {
       return {
-        value: myMatch[0],
-        confidence: findConfidenceNear(myMatch[0]),
+        value: dMatch[0],
+        confidence: Math.max(60, findConfidenceNear(dMatch[0])),
       };
     }
 
@@ -209,7 +434,8 @@ export function extractFields(
     const emailRegex = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/;
     const emailMatch = cleanText.match(emailRegex);
 
-    const phoneRegex = /(?:toll\s*free|care|helpline|call|phone|tel)?[\s:.\-]*(1800[\s\-]?\d{3}[\s\-]?\d{3,4}|\+?91[\s\-]?[6-9]\d{9}|\b[6-9]\d{9}\b)/i;
+    // Matches toll-free 1800, landlines (0xx-xxxxxxx), or mobile numbers
+    const phoneRegex = /(?:toll\s*free|care|helpline|call|phone|tel|ph)?[\s:.\-]*(1800[\s\-]?\d{3}[\s\-]?\d{3,4}|0\d{2,4}[\s\-]?\d{6,8}|\+?91[\s\-]?[6-9]\d{9}|\b[6-9]\d{9}\b)/i;
     const phoneMatch = cleanText.match(phoneRegex);
 
     if (emailMatch && phoneMatch && phoneMatch[1]) {
@@ -222,22 +448,26 @@ export function extractFields(
     if (phoneMatch && phoneMatch[1]) {
       return {
         value: `Helpline: ${phoneMatch[1]}`,
-        confidence: findConfidenceNear(phoneMatch[1]),
+        confidence: Math.max(65, findConfidenceNear(phoneMatch[1])),
       };
     }
 
     if (emailMatch && emailMatch[1]) {
       return {
         value: `Email: ${emailMatch[1]}`,
-        confidence: findConfidenceNear(emailMatch[1]),
+        confidence: Math.max(65, findConfidenceNear(emailMatch[1])),
       };
     }
 
-    if (/consumer\s*care|customer\s*care|feedback\s*desk|grievance/i.test(normalizedText)) {
-      return {
-        value: 'Consumer Care mentioned (Details require manual inspection)',
-        confidence: 50,
-      };
+    // Check line-by-line for consumer care contact statements
+    for (const lineObj of lines) {
+      const l = lineObj.text.trim();
+      if (/consumer\s*care|customer\s*care|feedback|helpline|queries|care\s*cell|complaint/i.test(l)) {
+        return {
+          value: l.length > 50 ? l.slice(0, 50) + '...' : l,
+          confidence: Math.max(60, lineObj.confidence || 65),
+        };
+      }
     }
 
     return {
@@ -326,16 +556,15 @@ export function extractFields(
         extraction = extractManufacturer();
         break;
       case 'mrp': {
-        const mrpExtraction = extractMRP();
-        extraction = mrpExtraction;
-
-        if (extraction.value !== null) {
-          if (!mrpExtraction.hasTaxPhrase) {
-            customStatus = 'warning';
-            customReason = "MRP found but missing 'inclusive of all taxes' declaration — required under Rule 6(1)(f)";
-            customSuggestion = "Add the phrase 'inclusive of all taxes' next to the MRP.";
-          }
-        }
+        const mrpState = verifyMRP();
+        extraction = {
+          value: mrpState.mrpValue,
+          confidence: mrpState.confidence,
+          reason: mrpState.reason,
+        };
+        customStatus = mrpState.status;
+        customReason = mrpState.reason;
+        customSuggestion = mrpState.suggestion;
         break;
       }
       case 'netQuantity':
@@ -353,8 +582,41 @@ export function extractFields(
       case 'manufacturerAddress':
         extraction = extractManufacturerAddress();
         break;
-      default:
-        extraction = { value: null, confidence: 0, reason: 'Field not recognized' };
+      default: {
+        // Generic extraction for admin-added rules (e.g. Batch Number, License No, etc.)
+        const labelLower = rule.label.toLowerCase();
+        const searchTerms = [
+          labelLower,
+          ...labelLower.split(/[\s/&]+/).filter((t) => t.length >= 3),
+        ];
+        if (/batch/i.test(rule.label)) {
+          searchTerms.push('batch', 'b.no', 'b no', 'lot', 'lot no', 'bn');
+        }
+        let matchedLine: string | null = null;
+        let matchConf = 0;
+        for (const lineObj of lines) {
+          const lLower = lineObj.text.toLowerCase();
+          for (const term of searchTerms) {
+            if (lLower.includes(term)) {
+              matchedLine = lineObj.text.trim();
+              matchConf = Math.max(65, lineObj.confidence || 70);
+              break;
+            }
+          }
+          if (matchedLine) break;
+        }
+
+        if (matchedLine) {
+          extraction = { value: matchedLine, confidence: matchConf };
+        } else {
+          extraction = {
+            value: null,
+            confidence: 0,
+            reason: `${rule.label} declaration not detected on label`,
+          };
+        }
+        break;
+      }
     }
 
     let status: ExtractedField['status'];

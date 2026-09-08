@@ -14,6 +14,7 @@ import { ScanHistory } from './components/ScanHistory';
 import { IssuesList } from './components/IssuesList';
 import { PrintReportView } from './components/PrintReportView';
 import { extractFields } from './utils/extractor';
+import { performMrpRegionFallback } from './utils/mrpRegionFallback';
 import {
   loadScanHistory,
   saveScanToHistory,
@@ -145,7 +146,7 @@ export function App() {
       }));
 
       // Run Rule Engine
-      const auditReport = extractFields(
+      let auditReport = extractFields(
         result.data.text,
         lines,
         result.data.confidence ?? 80,
@@ -153,6 +154,28 @@ export function App() {
         isImported,
         words
       );
+
+      // Fallback verification pass: when MRP is detected but tax declaration not verified
+      const initialMrp = auditReport.fields.find((f) => f.key === 'mrp');
+      if (initialMrp?.value && initialMrp.status !== 'compliant') {
+        setOcrStatusText('Refining MRP region verification...');
+        const fallbackRes = await performMrpRegionFallback(imagePreview, words, worker);
+        if (fallbackRes) {
+          auditReport = extractFields(
+            result.data.text,
+            lines,
+            result.data.confidence ?? 80,
+            category,
+            isImported,
+            words,
+            {
+              secondPassAttempted: true,
+              secondPassText: fallbackRes.fallbackText,
+              isLowConfidence: fallbackRes.fallbackConfidence < 70,
+            }
+          );
+        }
+      }
 
       auditReport.imagePreviewUrl = imagePreview;
       setReport(auditReport);

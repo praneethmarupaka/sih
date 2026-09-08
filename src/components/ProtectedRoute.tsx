@@ -7,29 +7,28 @@ interface ProtectedRouteProps {
   children: React.ReactNode;
 }
 
+function roleToDashboard(role: AuthRole): string {
+  switch (role) {
+    case 'Customer': return '/customer/dashboard';
+    case 'Inspector': return '/inspector/dashboard';
+    case 'Admin': return '/admin/dashboard';
+    case 'Manufacturer': return '/manufacturer/dashboard';
+  }
+}
+
 export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ allowedRole, children }) => {
   const { isAuthenticated, currentRole, setUnauthorizedMessage } = useAuth();
   const location = useLocation();
 
   if (!isAuthenticated || !currentRole) {
-    // Unauthenticated user -> redirect to /login
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
   if (currentRole !== allowedRole) {
-    // Logged in as a different role -> redirect to their own dashboard with an unauthorized notice
-    const targetDashboard =
-      currentRole === 'Customer'
-        ? '/customer/dashboard'
-        : currentRole === 'Inspector'
-        ? '/inspector/dashboard'
-        : '/admin/dashboard';
-
     setUnauthorizedMessage(
-      `Access Denied: You are signed in as ${currentRole}. Access to ${allowedRole} dashboard is restricted.`
+      `Access Denied: You are signed in as ${currentRole}. ${allowedRole} access is restricted.`
     );
-
-    return <Navigate to={targetDashboard} replace />;
+    return <Navigate to={roleToDashboard(currentRole)} replace />;
   }
 
   return <>{children}</>;

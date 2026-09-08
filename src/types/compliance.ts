@@ -66,6 +66,8 @@ export interface ComplianceReport {
 
 export interface ScanHistoryItem {
   id: string;
+  userId?: string;
+  role?: string;
   timestamp: string;
   category: Category;
   isImported: boolean;

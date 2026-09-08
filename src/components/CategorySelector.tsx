@@ -1,6 +1,7 @@
 import React from 'react';
 import { Globe, Info } from 'lucide-react';
-import { CATEGORY_RULES, type Category } from '../rules';
+import type { Category } from '../rules';
+import { getEffectiveRules } from '../utils/rulesOverride';
 
 interface CategorySelectorProps {
   category: Category;
@@ -17,7 +18,7 @@ export const CategorySelector: React.FC<CategorySelectorProps> = ({
   onImportedChange,
   disabled = false,
 }) => {
-  const currentRules = CATEGORY_RULES[category].getRules(isImported);
+  const currentRules = getEffectiveRules(category, isImported);
   const requiredCount = currentRules.filter((r) => r.required).length;
 
   return (

@@ -1,8 +1,10 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 
-export type AuthRole = 'Customer' | 'Inspector' | 'Admin';
+// Final Auth Roles: Customer, Inspector, Admin, Manufacturer
+export type AuthRole = 'Customer' | 'Inspector' | 'Admin' | 'Manufacturer';
 
 export interface AuthUser {
+  id: string;
   name: string;
   username: string;
   role: AuthRole;
@@ -10,6 +12,7 @@ export interface AuthUser {
 
 interface AuthContextType {
   currentUser: string | null;
+  currentUserId: string | null;
   currentRole: AuthRole | null;
   user: AuthUser | null;
   isAuthenticated: boolean;
@@ -20,17 +23,16 @@ interface AuthContextType {
   setUnauthorizedMessage: (msg: string | null) => void;
 }
 
-const AUTH_STORAGE_KEY = 'lm_compliance_auth_session';
+// Separate localStorage key for the auth session (not merged with users or manufacturers)
+const AUTH_SESSION_KEY = 'auth_session';
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<AuthUser | null>(() => {
     try {
-      const stored = localStorage.getItem(AUTH_STORAGE_KEY);
-      if (stored) {
-        return JSON.parse(stored);
-      }
+      const stored = localStorage.getItem(AUTH_SESSION_KEY);
+      if (stored) return JSON.parse(stored) as AuthUser;
     } catch (e) {
       console.warn('Failed to parse stored auth session:', e);
     }
@@ -42,12 +44,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     if (user) {
       try {
-        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
+        localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(user));
       } catch (e) {
         console.warn('Failed to persist auth session:', e);
       }
     } else {
-      localStorage.removeItem(AUTH_STORAGE_KEY);
+      localStorage.removeItem(AUTH_SESSION_KEY);
     }
   }, [user]);
 
@@ -60,7 +62,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setUser(null);
     setUnauthorizedMessage(null);
     try {
-      localStorage.removeItem(AUTH_STORAGE_KEY);
+      localStorage.removeItem(AUTH_SESSION_KEY);
     } catch (e) {
       console.warn('Failed to clear stored auth session:', e);
     }
@@ -74,6 +76,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     <AuthContext.Provider
       value={{
         currentUser: user ? user.name : null,
+        currentUserId: user ? user.id : null,
         currentRole: user ? user.role : null,
         user,
         isAuthenticated: !!user,

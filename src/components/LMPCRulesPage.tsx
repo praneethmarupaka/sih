@@ -1,9 +1,10 @@
 import React from 'react';
 import { BookOpen } from 'lucide-react';
 import { CATEGORY_RULES, type Category } from '../rules';
+import { getEffectiveRules, getAllCategories, getCustomCategories } from '../utils/rulesOverride';
 
 export const LMPCRulesPage: React.FC = () => {
-  const categories = Object.keys(CATEGORY_RULES) as Category[];
+  const categories = getAllCategories();
 
   return (
     <div className="space-y-6">
@@ -27,9 +28,18 @@ export const LMPCRulesPage: React.FC = () => {
       {/* Rules Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {categories.map((catKey) => {
-          const config = CATEGORY_RULES[catKey];
-          const domesticRules = config.getRules(false);
-          const importedRules = config.getRules(true);
+          const isBuiltIn = catKey in CATEGORY_RULES;
+          const config = isBuiltIn ? CATEGORY_RULES[catKey as Category] : null;
+          const customCats = getCustomCategories();
+          const customInfo = customCats.find((c) => c.name === catKey);
+
+          const categoryTitle = config ? config.category : catKey;
+          const categoryDesc = config
+            ? config.description
+            : (customInfo ? customInfo.description : 'Custom product category');
+
+          const domesticRules = getEffectiveRules(catKey, false);
+          const importedRules = getEffectiveRules(catKey, true);
           const hasImportedDifference = importedRules.length !== domesticRules.length;
 
           return (
@@ -39,12 +49,12 @@ export const LMPCRulesPage: React.FC = () => {
             >
               <div>
                 <div className="flex items-start justify-between gap-2 mb-1">
-                  <h4 className="text-sm font-bold text-gray-900">{config.category}</h4>
+                  <h4 className="text-sm font-bold text-gray-900">{categoryTitle}</h4>
                   <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 shrink-0">
                     {domesticRules.filter((r) => r.required).length} Mandatory
                   </span>
                 </div>
-                <p className="text-xs text-gray-500 mb-3">{config.description}</p>
+                <p className="text-xs text-gray-500 mb-3">{categoryDesc}</p>
 
                 <div className="space-y-2">
                   {domesticRules.map((rule) => (

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { createWorker } from 'tesseract.js';
 import { useAuth } from '../context/AuthContext';
@@ -15,6 +15,7 @@ import { ScanHistory } from '../components/ScanHistory';
 import { IssuesList } from '../components/IssuesList';
 import { PrintReportView } from '../components/PrintReportView';
 import { extractFields } from '../utils/extractor';
+import { performMrpRegionFallback } from '../utils/mrpRegionFallback';
 import {
   loadScanHistory,
   saveScanToHistory,
@@ -40,7 +41,7 @@ import type { SampleLabel } from '../utils/sampleLabels';
 
 export const InspectorDashboardPage: React.FC = () => {
   const navigate = useNavigate();
-  const { currentUser, logout } = useAuth();
+  const { currentUser, currentUserId, currentRole, logout } = useAuth();
 
   // Page Navigation
   const [activePage, setActivePage] = useState<AppPage>('dashboard');
@@ -68,10 +69,13 @@ export const InspectorDashboardPage: React.FC = () => {
   const [issues, setIssues] = useState<ComplianceIssue[]>([]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  // Guard against asynchronous OCR race conditions / stale scan overrides
+  const activeScanIdRef = useRef<string>('');
+
   useEffect(() => {
-    setHistory(loadScanHistory());
+    setHistory(loadScanHistory(currentUserId, currentRole));
     setIssues(loadIssues());
-  }, []);
+  }, [currentUserId, currentRole]);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -80,14 +84,17 @@ export const InspectorDashboardPage: React.FC = () => {
 
   const handleClearHistory = () => {
     if (window.confirm('Clear all saved scan history?')) {
-      clearScanHistory();
+      clearScanHistory(currentUserId, currentRole);
       setHistory([]);
     }
   };
 
   const handleImageSelected = (dataUrl: string, sampleInfo?: SampleLabel) => {
+    activeScanIdRef.current = '';
     setImagePreview(dataUrl);
     setReport(null);
+    setOcrProgress(0);
+    setOcrStatusText('');
     if (sampleInfo) {
       setCategory(sampleInfo.category);
       setIsImported(sampleInfo.isImported);
@@ -95,6 +102,7 @@ export const InspectorDashboardPage: React.FC = () => {
   };
 
   const handleClearImage = () => {
+    activeScanIdRef.current = '';
     setImagePreview(null);
     setReport(null);
     setOcrProgress(0);
@@ -104,6 +112,11 @@ export const InspectorDashboardPage: React.FC = () => {
   const handleRunScan = useCallback(async () => {
     if (!imagePreview) return;
 
+    const currentScanId = `scan_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    activeScanIdRef.current = currentScanId;
+
+    // Reset previous extraction/compliance result completely
+    setReport(null);
     setIsProcessing(true);
     setOcrProgress(5);
     setOcrStatusText('Initializing Tesseract OCR worker...');
@@ -125,6 +138,9 @@ export const InspectorDashboardPage: React.FC = () => {
       setOcrStatusText('Scanning label image for legal declarations...');
       const result = await worker.recognize(imagePreview);
 
+      // Check if this scan is still the current active scan
+      if (activeScanIdRef.current !== currentScanId) return;
+
       const rawLines: string[] = result.data.text.split('\n').filter((l) => l.trim().length > 0);
       const lines = rawLines.map((lineText: string) => ({
         text: lineText,
@@ -142,7 +158,7 @@ export const InspectorDashboardPage: React.FC = () => {
         bbox: w.bbox || { x0: 0, y0: 0, x1: 0, y1: 0 },
       }));
 
-      const auditReport = extractFields(
+      let auditReport = extractFields(
         result.data.text,
         lines,
         result.data.confidence ?? 80,
@@ -150,6 +166,30 @@ export const InspectorDashboardPage: React.FC = () => {
         isImported,
         words
       );
+
+      // Fallback verification pass: when MRP is detected but tax declaration not verified
+      const initialMrp = auditReport.fields.find((f) => f.key === 'mrp');
+      if (initialMrp?.value && initialMrp.status !== 'compliant') {
+        setOcrStatusText('Refining MRP region verification...');
+        const fallbackRes = await performMrpRegionFallback(imagePreview, words, worker);
+        if (fallbackRes) {
+          auditReport = extractFields(
+            result.data.text,
+            lines,
+            result.data.confidence ?? 80,
+            category,
+            isImported,
+            words,
+            {
+              secondPassAttempted: true,
+              secondPassText: fallbackRes.fallbackText,
+              isLowConfidence: fallbackRes.fallbackConfidence < 70,
+            }
+          );
+        }
+      }
+
+      if (activeScanIdRef.current !== currentScanId) return;
 
       auditReport.imagePreviewUrl = imagePreview;
       setReport(auditReport);
@@ -160,27 +200,35 @@ export const InspectorDashboardPage: React.FC = () => {
         const mrpField = auditReport.fields.find((f) => f.key === 'mrp');
         const netField = auditReport.fields.find((f) => f.key === 'netQuantity');
 
-        const updatedHistory = saveScanToHistory({
-          timestamp: auditReport.timestamp,
-          category: auditReport.category,
-          isImported: auditReport.isImported,
-          score: auditReport.score,
-          isCompliant: auditReport.isCompliant,
-          thumbnail: thumb,
-          productName: mfgField?.value || 'Packaged Product',
-          passedCount: auditReport.passedCount,
-          totalRequired: auditReport.totalRequired,
-          mrp: mrpField?.value || undefined,
-          netQuantity: netField?.value || undefined,
-        });
+        const updatedHistory = saveScanToHistory(
+          {
+            timestamp: auditReport.timestamp,
+            category: auditReport.category,
+            isImported: auditReport.isImported,
+            score: auditReport.score,
+            isCompliant: auditReport.isCompliant,
+            thumbnail: thumb,
+            productName: mfgField?.value || 'Packaged Product',
+            passedCount: auditReport.passedCount,
+            totalRequired: auditReport.totalRequired,
+            mrp: mrpField?.value || undefined,
+            netQuantity: netField?.value || undefined,
+          },
+          currentUserId,
+          currentRole
+        );
 
-        setHistory(updatedHistory);
+        if (activeScanIdRef.current === currentScanId) {
+          setHistory(updatedHistory);
+        }
       } catch (err) {
         console.warn('Could not save to history:', err);
       }
     } catch (err) {
-      console.error('OCR Processing failed:', err);
-      alert('OCR failed to parse the image. Please try a clearer or higher resolution photo.');
+      if (activeScanIdRef.current === currentScanId) {
+        console.error('OCR Processing failed:', err);
+        alert('OCR failed to parse the image. Please try a clearer or higher resolution photo.');
+      }
     } finally {
       if (worker) {
         try {
@@ -189,7 +237,9 @@ export const InspectorDashboardPage: React.FC = () => {
           // ignore termination error
         }
       }
-      setIsProcessing(false);
+      if (activeScanIdRef.current === currentScanId) {
+        setIsProcessing(false);
+      }
     }
   }, [imagePreview, category, isImported]);
 
@@ -249,7 +299,7 @@ export const InspectorDashboardPage: React.FC = () => {
           },
           {
             key: 'netQuantity',
-            label: 'Net Quantity',
+            label: 'Net Quantity / Net Weight',
             value: item.netQuantity || null,
             status: item.netQuantity ? 'compliant' : 'violation',
             confidence: 90,

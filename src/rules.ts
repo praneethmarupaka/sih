@@ -46,9 +46,9 @@ export const CATEGORY_RULES: Record<Category, CategoryRuleConfig> = {
       },
       {
         key: 'netQuantity',
-        label: 'Net Quantity',
+        label: 'Net Quantity / Net Weight',
         required: true,
-        suggestionIfMissing: "Declare net quantity using standard metric units (e.g., g, kg, ml, L) in compliant font height."
+        suggestionIfMissing: "Declare net quantity or net weight using standard metric units (e.g., g, kg, ml, L) in compliant font height."
       },
       {
         key: 'mfgDate',
@@ -84,7 +84,7 @@ export const CATEGORY_RULES: Record<Category, CategoryRuleConfig> = {
       },
       {
         key: 'netQuantity',
-        label: 'Net Quantity',
+        label: 'Net Quantity / Net Weight',
         required: true,
         suggestionIfMissing: "Specify package contents / piece count (e.g., '1 N', '1 Unit', or net weight)."
       },
@@ -118,7 +118,7 @@ export const CATEGORY_RULES: Record<Category, CategoryRuleConfig> = {
         },
         {
           key: 'netQuantity',
-          label: 'Net Quantity',
+          label: 'Net Quantity / Net Weight',
           required: true,
           suggestionIfMissing: "Declare net volume/weight (ml, g) on principal display panel."
         }
@@ -156,7 +156,7 @@ export const CATEGORY_RULES: Record<Category, CategoryRuleConfig> = {
       },
       {
         key: 'netQuantity',
-        label: 'Net Quantity',
+        label: 'Net Quantity / Net Weight',
         required: true,
         suggestionIfMissing: "Declare net volume or weight (e.g. 500 ml, 1 L, 1 kg) in standard font height."
       },
@@ -195,7 +195,7 @@ export const CATEGORY_RULES: Record<Category, CategoryRuleConfig> = {
         },
         {
           key: 'netQuantity',
-          label: 'Net Quantity / Piece Count',
+          label: 'Net Quantity / Net Weight',
           required: true,
           suggestionIfMissing: "Declare piece count (e.g., '1 N', '1 Set', '10 Units') or net weight."
         },

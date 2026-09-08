@@ -11,7 +11,7 @@ import type { ScanHistoryItem } from '../types/compliance';
 
 export const AdminDashboardPage: React.FC = () => {
   const navigate = useNavigate();
-  const { currentUser, logout } = useAuth();
+  const { currentUser, currentUserId, currentRole, logout } = useAuth();
 
   // Only pages available for Admin
   const [activePage, setActivePage] = useState<AppPage>('dashboard');
@@ -19,12 +19,12 @@ export const AdminDashboardPage: React.FC = () => {
   const [history, setHistory] = useState<ScanHistoryItem[]>([]);
 
   useEffect(() => {
-    setHistory(loadScanHistory());
-  }, []);
+    setHistory(loadScanHistory(currentUserId, currentRole));
+  }, [currentUserId, currentRole]);
 
   const handleClearHistory = () => {
     if (window.confirm('Clear all saved scan history?')) {
-      clearScanHistory();
+      clearScanHistory(currentUserId, currentRole);
       setHistory([]);
     }
   };

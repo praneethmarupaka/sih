@@ -17,7 +17,6 @@ import {
   ShieldAlert,
 } from 'lucide-react';
 import type { ComplianceReport, UserRole, ExtractedField } from '../types/compliance';
-import type { FieldStatus } from '../rules';
 import { EvidenceOverlay } from './EvidenceOverlay';
 
 interface ComplianceReportCardProps {
@@ -36,8 +35,8 @@ export const ComplianceReportCard: React.FC<ComplianceReportCardProps> = ({
   const [showRawText, setShowRawText] = useState(false);
 
   // Status badge styling helper
-  const getStatusBadge = (status: FieldStatus, confidence: number) => {
-    switch (status) {
+  const getStatusBadge = (field: ExtractedField) => {
+    switch (field.status) {
       case 'compliant':
         return {
           icon: <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />,
@@ -48,21 +47,21 @@ export const ComplianceReportCard: React.FC<ComplianceReportCardProps> = ({
       case 'warning':
         return {
           icon: <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />,
-          label: 'Warning (Tax Phrase Missing)',
+          label: field.key === 'mrp' ? 'Warning (Unable to Verify)' : 'Warning',
           badgeClass: 'bg-amber-50 text-amber-800 border-amber-300',
           dot: 'bg-amber-500',
         };
       case 'violation':
         return {
           icon: <XCircle className="w-5 h-5 text-rose-600 shrink-0" />,
-          label: 'Violation',
+          label: field.key === 'mrp' && field.value ? 'Non-Compliant (Tax Declaration Missing)' : 'Violation',
           badgeClass: 'bg-rose-50 text-rose-700 border-rose-200',
           dot: 'bg-rose-500',
         };
       case 'manual_review':
         return {
           icon: <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />,
-          label: `Manual Review (${confidence}% OCR)`,
+          label: `Manual Review (${field.confidence}% OCR)`,
           badgeClass: 'bg-amber-50 text-amber-700 border-amber-200',
           dot: 'bg-amber-500',
         };
@@ -229,11 +228,11 @@ export const ComplianceReportCard: React.FC<ComplianceReportCardProps> = ({
               </p>
             </div>
 
-            {/* Net Quantity */}
+            {/* Net Quantity / Net Weight */}
             <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-xs">
               <div className="flex items-center gap-2 text-gray-500 text-xs font-semibold mb-1">
                 <Scale className="w-4 h-4 text-gray-400" />
-                <span>Net Quantity</span>
+                <span>Net Quantity / Net Weight</span>
               </div>
               <p className="text-base font-bold text-gray-900 break-words">
                 {netQtyField?.value || (
@@ -262,7 +261,7 @@ export const ComplianceReportCard: React.FC<ComplianceReportCardProps> = ({
 
           <div className="space-y-3">
             {report.fields.map((field) => {
-              const badge = getStatusBadge(field.status, field.confidence);
+              const badge = getStatusBadge(field);
 
               return (
                 <div
@@ -298,8 +297,8 @@ export const ComplianceReportCard: React.FC<ComplianceReportCardProps> = ({
                         {badge.label}
                       </span>
 
-                      {/* Feature 4: Inspector Create Issue Button */}
-                      {role === 'Inspector' && (field.status === 'violation' || field.status === 'warning') && onCreateIssue && (
+                      {/* Feature 4: Inspector Create Issue Button - Only for actual violations */}
+                      {role === 'Inspector' && field.status === 'violation' && onCreateIssue && (
                         <button
                           type="button"
                           onClick={() => onCreateIssue(field)}
