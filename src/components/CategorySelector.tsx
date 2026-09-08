@@ -41,6 +41,8 @@ export const CategorySelector: React.FC<CategorySelectorProps> = ({
               <option value="Food & Beverages">Food & Beverages (FSSAI + Legal Metrology)</option>
               <option value="Electronics">Electronics (E-Label & QR Declarations)</option>
               <option value="Cosmetics & Personal Care">Cosmetics & Personal Care</option>
+              <option value="Household & Cleaning Products">Household & Cleaning Products</option>
+              <option value="Toys & Stationery">Toys & Stationery</option>
             </select>
             <div className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-gray-500 text-xs">
               ▼

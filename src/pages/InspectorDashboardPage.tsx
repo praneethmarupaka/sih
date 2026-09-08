@@ -1,69 +1,70 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { createWorker } from 'tesseract.js';
-import { Header } from './components/Header';
-import { Sidebar, type AppPage } from './components/Sidebar';
-import { Dashboard } from './components/Dashboard';
-import { AllProductsPage } from './components/AllProductsPage';
-import { LMPCRulesPage } from './components/LMPCRulesPage';
-import { ReportsPage } from './components/ReportsPage';
-import { CategorySelector } from './components/CategorySelector';
-import { ImageUploader } from './components/ImageUploader';
-import { OCRProgress } from './components/OCRProgress';
-import { ComplianceReportCard } from './components/ComplianceReportCard';
-import { ScanHistory } from './components/ScanHistory';
-import { IssuesList } from './components/IssuesList';
-import { PrintReportView } from './components/PrintReportView';
-import { extractFields } from './utils/extractor';
+import { useAuth } from '../context/AuthContext';
+import { Sidebar, type AppPage } from '../components/Sidebar';
+import { Dashboard } from '../components/Dashboard';
+import { AllProductsPage } from '../components/AllProductsPage';
+import { LMPCRulesPage } from '../components/LMPCRulesPage';
+import { ReportsPage } from '../components/ReportsPage';
+import { CategorySelector } from '../components/CategorySelector';
+import { ImageUploader } from '../components/ImageUploader';
+import { OCRProgress } from '../components/OCRProgress';
+import { ComplianceReportCard } from '../components/ComplianceReportCard';
+import { ScanHistory } from '../components/ScanHistory';
+import { IssuesList } from '../components/IssuesList';
+import { PrintReportView } from '../components/PrintReportView';
+import { extractFields } from '../utils/extractor';
 import {
   loadScanHistory,
   saveScanToHistory,
   clearScanHistory,
   createThumbnail,
-} from './utils/storage';
+} from '../utils/storage';
 import {
   loadIssues,
   saveNewIssue,
   updateIssueStatus,
   updateIssueComments,
   deleteIssue,
-} from './utils/issuesStorage';
-import type { Category, UserRole } from './rules';
+} from '../utils/issuesStorage';
+import type { Category } from '../rules';
 import type {
   ComplianceReport,
   ScanHistoryItem,
   ComplianceIssue,
   IssueStatus,
   ExtractedField,
-} from './types/compliance';
-import type { SampleLabel } from './utils/sampleLabels';
+} from '../types/compliance';
+import type { SampleLabel } from '../utils/sampleLabels';
 
-export function App() {
-  // 1. Role View (Inspector / Manufacturer / Consumer / Admin)
-  const [role, setRole] = useState<UserRole>('Inspector');
+export const InspectorDashboardPage: React.FC = () => {
+  const navigate = useNavigate();
+  const { currentUser, logout } = useAuth();
 
-  // Page Navigation ('dashboard' | 'scanner' | 'all-products' | 'violations' | 'rules' | 'reports')
+  // Page Navigation
   const [activePage, setActivePage] = useState<AppPage>('dashboard');
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
 
-  // 2. Category & Rules
+  // Category & Rules
   const [category, setCategory] = useState<Category>('Food & Beverages');
   const [isImported, setIsImported] = useState<boolean>(false);
 
-  // 3. Image State
+  // Image State
   const [imagePreview, setImagePreview] = useState<string | null>(null);
 
-  // 4. Processing & OCR State
+  // Processing & OCR State
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [ocrProgress, setOcrProgress] = useState<number>(0);
   const [ocrStatusText, setOcrStatusText] = useState<string>('');
 
-  // 5. Compliance Audit Result
+  // Compliance Audit Result
   const [report, setReport] = useState<ComplianceReport | null>(null);
 
-  // 6. Scan History from localStorage
+  // Scan History from localStorage
   const [history, setHistory] = useState<ScanHistoryItem[]>([]);
 
-  // 7. Compliance Issues Tracker
+  // Compliance Issues Tracker
   const [issues, setIssues] = useState<ComplianceIssue[]>([]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -100,7 +101,6 @@ export function App() {
     setOcrStatusText('');
   };
 
-  // Run Tesseract.js OCR client-side
   const handleRunScan = useCallback(async () => {
     if (!imagePreview) return;
 
@@ -125,14 +125,12 @@ export function App() {
       setOcrStatusText('Scanning label image for legal declarations...');
       const result = await worker.recognize(imagePreview);
 
-      // Extract lines safely
       const rawLines: string[] = result.data.text.split('\n').filter((l) => l.trim().length > 0);
       const lines = rawLines.map((lineText: string) => ({
         text: lineText,
         confidence: result.data.confidence ?? 80,
       }));
 
-      // Extract words with bounding boxes safely
       const rawWords = (((result.data as any).words || []) as Array<{
         text: string;
         confidence: number;
@@ -144,7 +142,6 @@ export function App() {
         bbox: w.bbox || { x0: 0, y0: 0, x1: 0, y1: 0 },
       }));
 
-      // Run Rule Engine
       const auditReport = extractFields(
         result.data.text,
         lines,
@@ -157,7 +154,6 @@ export function App() {
       auditReport.imagePreviewUrl = imagePreview;
       setReport(auditReport);
 
-      // Save to localStorage Scan History
       try {
         const thumb = await createThumbnail(imagePreview);
         const mfgField = auditReport.fields.find((f) => f.key === 'manufacturerName');
@@ -197,17 +193,12 @@ export function App() {
     }
   }, [imagePreview, category, isImported]);
 
-  const handlePrintReport = () => {
-    window.print();
-  };
+  const handlePrintReport = () => window.print();
 
-  // Feature 4: Create Issue on violation/warning
   const handleCreateIssue = (field: ExtractedField) => {
     const productName =
       report?.fields.find((f) => f.key === 'manufacturerName')?.value || 'Scanned Product';
-
     const violationText = field.reason || `${field.label}: Declaration Missing`;
-
     const updated = saveNewIssue(
       productName,
       violationText,
@@ -215,7 +206,6 @@ export function App() {
       category,
       field.suggestion ? `Recommended: ${field.suggestion}` : ''
     );
-
     setIssues(updated);
     const newIssue = updated[0];
     showToast(`Issue ${newIssue.id} created! View in the "Violations" page.`);
@@ -233,14 +223,10 @@ export function App() {
     setIssues(deleteIssue(id));
   };
 
-  const openIssuesCount = issues.filter((i) => i.status === 'Open').length;
-
   const handlePrintScanItem = (item: ScanHistoryItem) => {
-    // If currently scanned report matches this item or if we create a printable report view
     if (report && report.timestamp === item.timestamp) {
       window.print();
     } else {
-      // Reconstruct minimal report for printing past item
       const reconstructedReport: ComplianceReport = {
         category: item.category,
         isImported: item.isImported,
@@ -281,18 +267,19 @@ export function App() {
         thumbnailUrl: item.thumbnail,
       };
       setReport(reconstructedReport);
-      setTimeout(() => {
-        window.print();
-      }, 100);
+      setTimeout(() => window.print(), 100);
     }
   };
 
-  const isConsumer = role === 'Consumer';
+  const openIssuesCount = issues.filter((i) => i.status === 'Open').length;
 
-  // Scanner View JSX
+  const handleSignOut = () => {
+    logout();
+    navigate('/login');
+  };
+
   const renderScannerContent = () => (
     <>
-      {/* 1. Category Selection & Rules Engine */}
       <CategorySelector
         category={category}
         onCategoryChange={setCategory}
@@ -300,8 +287,6 @@ export function App() {
         onImportedChange={setIsImported}
         disabled={isProcessing}
       />
-
-      {/* 2. Image Uploader */}
       <ImageUploader
         imagePreview={imagePreview}
         onImageSelected={handleImageSelected}
@@ -313,23 +298,17 @@ export function App() {
           setIsImported(imported);
         }}
       />
-
-      {/* OCR Processing Spinner */}
       {isProcessing && (
         <OCRProgress statusText={ocrStatusText} progress={ocrProgress} />
       )}
-
-      {/* Compliance Report Card */}
       {report && !isProcessing && (
         <ComplianceReportCard
           report={report}
-          role={role}
+          role="Inspector"
           onPrintReport={handlePrintReport}
           onCreateIssue={handleCreateIssue}
         />
       )}
-
-      {/* 3. Scan History (localStorage) */}
       <ScanHistory
         history={history}
         onClearHistory={handleClearHistory}
@@ -339,12 +318,12 @@ export function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-gray-900 flex font-sans">
-      {/* Printable view (only shown during window.print()) */}
-      {report && <PrintReportView report={report} role={role} />}
+      {/* Printable view */}
+      {report && <PrintReportView report={report} role="Inspector" />}
 
       {/* Toast Notification */}
       {toastMessage && (
-        <div className="fixed top-20 right-6 z-50 bg-gray-900 text-white px-4 py-2.5 rounded-lg shadow-lg text-xs font-semibold flex items-center gap-2 border border-gray-700 animate-in fade-in slide-in-from-top-2 no-print">
+        <div className="fixed top-20 right-6 z-50 bg-gray-900 text-white px-4 py-2.5 rounded-lg shadow-lg text-xs font-semibold flex items-center gap-2 border border-gray-700 no-print">
           <span className="w-2 h-2 rounded-full bg-rose-500" />
           <span>{toastMessage}</span>
           <button
@@ -357,69 +336,37 @@ export function App() {
         </div>
       )}
 
-      {/* Role-aware layout: Consumer gets NO sidebar, others get Sidebar */}
-      {!isConsumer && (
-        <Sidebar
-          role={role}
-          activePage={activePage}
-          onNavigate={(page) => setActivePage(page)}
-          onRoleChange={setRole}
-          onSignOut={() => {
-            if (window.confirm('Sign out of LM Compliance Scanner?')) {
-              setRole('Consumer');
-              setActivePage('dashboard');
-            }
-          }}
-          issuesCount={openIssuesCount}
-          collapsed={sidebarCollapsed}
-          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
-        />
-      )}
+      {/* Sidebar */}
+      <Sidebar
+        role="Inspector"
+        currentUserName={currentUser}
+        activePage={activePage}
+        onNavigate={(page) => setActivePage(page)}
+        onSignOut={handleSignOut}
+        issuesCount={openIssuesCount}
+        collapsed={sidebarCollapsed}
+        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+      />
 
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0 h-screen overflow-y-auto">
-        {/* If Consumer: show simplified Header with Sign Out */}
-        {isConsumer ? (
-          <Header
-            role={role}
-            onRoleChange={setRole}
-            onSignOut={() => {
-              if (window.confirm('Sign out of LM Compliance Scanner?')) {
-                setRole('Inspector');
-                setActivePage('dashboard');
-              }
-            }}
-          />
-        ) : null}
-
-        {/* Page Content */}
         <main className="flex-1 max-w-6xl w-full mx-auto px-4 py-6 sm:px-8 space-y-6 no-print">
-          {isConsumer ? (
-            /* Consumer: simplified view, unchanged */
-            renderScannerContent()
-          ) : activePage === 'dashboard' ? (
-            /* Dashboard Page */
+          {activePage === 'dashboard' ? (
             <Dashboard
               history={history}
               issues={issues}
-              role={role}
+              role="Inspector"
               onNavigate={(page) => setActivePage(page)}
             />
           ) : activePage === 'scanner' ? (
-            /* Product Inspections (Scanner) */
             renderScannerContent()
           ) : activePage === 'all-products' ? (
-            /* All Products Page */
             <AllProductsPage
               history={history}
               onClearHistory={handleClearHistory}
-              onSelectScan={(_item) => {
-                // Navigate to scanner if user wants to inspect
-                setActivePage('scanner');
-              }}
+              onSelectScan={() => setActivePage('scanner')}
             />
           ) : activePage === 'violations' ? (
-            /* Violations Page */
             <IssuesList
               issues={issues}
               onStatusChange={handleStatusChange}
@@ -427,19 +374,16 @@ export function App() {
               onDeleteIssue={handleDeleteIssue}
             />
           ) : activePage === 'rules' ? (
-            /* LMPC Rules Page */
             <LMPCRulesPage />
           ) : activePage === 'reports' ? (
-            /* Reports Page */
             <ReportsPage
               history={history}
-              role={role}
+              role="Inspector"
               onPrintScan={handlePrintScanItem}
             />
           ) : null}
         </main>
 
-        {/* Clean footer */}
         <footer className="border-t border-gray-200 bg-white py-4 text-center text-xs text-gray-400 no-print mt-auto">
           <p>
             LM Compliance Scanner &bull; 100% Client-Side OCR &bull; Legal Metrology Packaged Commodities (LMPC) Rules
@@ -448,6 +392,4 @@ export function App() {
       </div>
     </div>
   );
-}
-
-export default App;
+};

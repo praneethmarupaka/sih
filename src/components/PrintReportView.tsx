@@ -62,6 +62,7 @@ export const PrintReportView: React.FC<PrintReportViewProps> = ({ report, role }
               </td>
               <td className="border border-black p-2 uppercase font-bold">
                 {field.status === 'compliant' && 'COMPLIANT'}
+                {field.status === 'warning' && 'WARNING (TAX PHRASE)'}
                 {field.status === 'violation' && 'VIOLATION'}
                 {field.status === 'manual_review' && 'REVIEW REQUIRED'}
                 {field.status === 'optional_qr' && 'QR DECLARABLE'}
@@ -70,7 +71,7 @@ export const PrintReportView: React.FC<PrintReportViewProps> = ({ report, role }
                 {field.value || 'NOT DECLARED'}
               </td>
               <td className="border border-black p-2 text-gray-700">
-                {field.status === 'violation' ? field.suggestion : (field.reason || 'Verified on package')}
+                {field.status === 'violation' || field.status === 'warning' ? field.suggestion : (field.reason || 'Verified on package')}
               </td>
             </tr>
           ))}

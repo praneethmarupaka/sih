@@ -14,20 +14,24 @@ import {
   Building2,
   Tag,
   Scale,
+  ShieldAlert,
 } from 'lucide-react';
-import type { ComplianceReport, UserRole } from '../types/compliance';
+import type { ComplianceReport, UserRole, ExtractedField } from '../types/compliance';
 import type { FieldStatus } from '../rules';
+import { EvidenceOverlay } from './EvidenceOverlay';
 
 interface ComplianceReportCardProps {
   report: ComplianceReport;
   role: UserRole;
   onPrintReport: () => void;
+  onCreateIssue?: (field: ExtractedField) => void;
 }
 
 export const ComplianceReportCard: React.FC<ComplianceReportCardProps> = ({
   report,
   role,
   onPrintReport,
+  onCreateIssue,
 }) => {
   const [showRawText, setShowRawText] = useState(false);
 
@@ -40,6 +44,13 @@ export const ComplianceReportCard: React.FC<ComplianceReportCardProps> = ({
           label: 'Compliant',
           badgeClass: 'bg-emerald-50 text-emerald-700 border-emerald-200',
           dot: 'bg-emerald-500',
+        };
+      case 'warning':
+        return {
+          icon: <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />,
+          label: 'Warning (Tax Phrase Missing)',
+          badgeClass: 'bg-amber-50 text-amber-800 border-amber-300',
+          dot: 'bg-amber-500',
         };
       case 'violation':
         return {
@@ -171,6 +182,16 @@ export const ComplianceReportCard: React.FC<ComplianceReportCardProps> = ({
         </div>
       </div>
 
+      {/* Feature 3: Evidence Highlighting Overlay */}
+      {report.imagePreviewUrl && (
+        <div className="p-6 border-b border-gray-100 bg-gray-50/40">
+          <EvidenceOverlay
+            imageSrc={report.imagePreviewUrl}
+            fieldBoxes={report.fieldBoxes || []}
+          />
+        </div>
+      )}
+
       {/* Feature 5: CONSUMER VIEW - Simplified layout */}
       {role === 'Consumer' ? (
         <div className="p-6 bg-gray-50/50 space-y-4">
@@ -249,7 +270,7 @@ export const ComplianceReportCard: React.FC<ComplianceReportCardProps> = ({
                   className={`p-4 rounded-xl border transition-all ${
                     field.status === 'violation'
                       ? 'bg-rose-50/40 border-rose-200'
-                      : field.status === 'manual_review'
+                      : field.status === 'warning' || field.status === 'manual_review'
                       ? 'bg-amber-50/40 border-amber-200'
                       : 'bg-white border-gray-200'
                   }`}
@@ -269,12 +290,27 @@ export const ComplianceReportCard: React.FC<ComplianceReportCardProps> = ({
                       </div>
                     </div>
 
-                    <span
-                      className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-0.5 rounded-full border self-start sm:self-auto ${badge.badgeClass}`}
-                    >
-                      <span className={`w-1.5 h-1.5 rounded-full ${badge.dot}`} />
-                      {badge.label}
-                    </span>
+                    <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
+                      <span
+                        className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-0.5 rounded-full border ${badge.badgeClass}`}
+                      >
+                        <span className={`w-1.5 h-1.5 rounded-full ${badge.dot}`} />
+                        {badge.label}
+                      </span>
+
+                      {/* Feature 4: Inspector Create Issue Button */}
+                      {role === 'Inspector' && (field.status === 'violation' || field.status === 'warning') && onCreateIssue && (
+                        <button
+                          type="button"
+                          onClick={() => onCreateIssue(field)}
+                          className="no-print inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white text-[11px] font-bold shadow-xs transition-colors cursor-pointer"
+                          title="Log this packaging violation to issues tracker"
+                        >
+                          <ShieldAlert className="w-3 h-3" />
+                          <span>Create Issue</span>
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   {/* Extracted Value */}
@@ -289,15 +325,19 @@ export const ComplianceReportCard: React.FC<ComplianceReportCardProps> = ({
                       </div>
                     )}
 
-                    {/* Reason if failed or manual review */}
+                    {/* Reason if failed, warning, or manual review */}
                     {field.reason && (
-                      <div className="flex items-start gap-1.5 text-xs text-gray-600">
-                        <AlertCircle className="w-3.5 h-3.5 text-rose-500 shrink-0 mt-0.5" />
+                      <div className="flex items-start gap-1.5 text-xs text-gray-700">
+                        {field.status === 'warning' ? (
+                          <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                        ) : (
+                          <AlertCircle className="w-3.5 h-3.5 text-rose-500 shrink-0 mt-0.5" />
+                        )}
                         <span>{field.reason}</span>
                       </div>
                     )}
 
-                    {/* Hardcoded suggestion if violation */}
+                    {/* Hardcoded suggestion if violation or warning */}
                     {field.suggestion && (
                       <div className="flex items-start gap-1.5 p-2 rounded-lg bg-amber-50/80 border border-amber-200 text-xs text-amber-900">
                         <Lightbulb className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
